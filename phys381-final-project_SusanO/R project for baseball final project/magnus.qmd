@@ -1,0 +1,899 @@
+---
+title: "magnus"
+format: 
+  html:
+    self-contained: true
+---
+
+```{r}
+# Constants
+ball_mass <- 0.145  # kg (official baseball mass)
+inch_to_meter <- 0.0254
+frames_per_second <- 50  # Statcast uses 50 frames/sec
+frame_to_second2 <- (frames_per_second)^2  # frames/sec^2 → sec^2
+
+```
+ 
+ 
+```{r}
+pitch_data <- pitch_data %>%
+  mutate(
+    # Convert pfx_x and pfx_z from inches/frame^2 to m/s^2
+    accel_x = (pfx_x * inch_to_meter) * frame_to_second2,
+    accel_z = (pfx_z * inch_to_meter) * frame_to_second2,
+    
+    # Total Magnus acceleration vector (m/s^2)
+    accel_magnus = sqrt(accel_x^2 + accel_z^2),
+    
+    # Magnus force in Newtons
+    magnus_force = ball_mass * accel_magnus
+  )
+
+```
+
+
+
+```{r}
+library(ggplot2)
+
+ggplot(pitch_data, aes(x = pitch_type, y = magnus_force)) +
+  geom_boxplot(fill = "#69b3a2") +
+  labs(
+    title = "Estimated Magnus Force by Pitch Type",
+    y = "Magnus Force (N)",
+    x = "Pitch Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+
+```{r}
+# Constants
+mass <- 0.145            # kg
+radius <- 0.0366         # m
+area <- pi * radius^2    # cross-sectional area
+rho <- 1.225             # air density (kg/m^3)
+Cd <- 0.3                # drag coefficient (approximate)
+inch_to_meter <- 0.0254
+fps_to_mps2 <- 50^2      # 50 frames/sec -> convert frame^2 to sec^2
+g <- 9.81                # m/s^2
+
+```
+
+
+```{r}
+pitch_data <- pitch_data %>%
+  mutate(
+    v_mps = release_speed * 0.44704,  # mph to m/s
+    pfx_x_mps2 = pfx_x * inch_to_meter * fps_to_mps2,
+    pfx_z_mps2 = pfx_z * inch_to_meter * fps_to_mps2
+  )
+
+```
+
+
+
+```{r}
+pitch_data <- pitch_data %>%
+  mutate(
+    drag_force = 0.5 * rho * Cd * area * v_mps^2,  # Newtons
+    drag_accel = drag_force / mass  # a = F/m
+  )
+
+```
+
+
+```{r}
+pitch_data <- pitch_data %>%
+  mutate(
+    # Decompose drag into z and x if needed, here we just subtract total drag from horizontal only
+    accel_x_magnus = pfx_x_mps2,  # assume drag acts mostly in y (toward plate), so x unaffected
+    accel_z_magnus = pfx_z_mps2 + g  # cancel gravity to isolate spin lift
+  )
+
+```
+
+
+
+```{r}
+pitch_data <- pitch_data %>%
+  mutate(
+    magnus_accel = sqrt(accel_x_magnus^2 + accel_z_magnus^2),
+    magnus_force = mass * magnus_accel  # in Newtons
+  )
+
+```
+
+```{r}
+ggplot(pitch_data, aes(x = pitch_type, y = magnus_force)) +
+  geom_boxplot(fill = "#4287f5") +
+  labs(
+    title = "Magnus Force by Pitch Type (Gravity & Drag Adjusted)",
+    y = "Magnus Force (N)",
+    x = "Pitch Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+```{r}
+ggplot(pitch_data, aes(x = 0, y = 0)) +
+  geom_segment(aes(xend = pfx_x_mps2, yend = accel_z_magnus),
+               arrow = arrow(length = unit(0.2, "cm")),
+               color = "blue") +
+  facet_wrap(~ pitch_type) +
+  coord_fixed() +
+  labs(title = "Magnus Acceleration Vectors by Pitch Type",
+       x = "Horizontal Accel (m/s²)", y = "Vertical Accel (m/s²)") +
+  theme_minimal()
+
+```
+```{r}
+ggplot(pitch_data, aes(x = pfx_x, y = pfx_z, color = pitch_type)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Spin-Induced Pitch Movement",
+       x = "Horizontal Movement (in)", y = "Vertical Movement (in)") +
+  theme_minimal()
+
+```
+
+```{r}
+
+ggplot(pitch_data, aes(x = pitch_type, y = magnus_force)) +
+  geom_boxplot(fill = "#69b3a2") +
+  labs(title = "Estimated Magnus Force by Pitch Type",
+       y = "Magnus Force (N)", x = "Pitch Type") +
+  theme_minimal()
+
+
+```
+
+#4
+
+
+
+```{r}
+library(tidyverse)
+
+pitch_data <- pitch_data %>%
+  filter(!is.na(spin_axis)) %>%  # Remove missing spin axis
+  mutate(
+    total_movement = sqrt(pfx_x^2 + pfx_z^2),  # in inches
+    spin_axis_rad = spin_axis * pi / 180       # degrees to radians
+  )
+
+```
+
+```{r}
+ggplot(pitch_data, aes(x = spin_axis, y = total_movement, color = pitch_type)) +
+  geom_point(alpha = 0.6, size = 2) +
+  coord_polar(start = 0, direction = 1) +
+  scale_x_continuous(breaks = seq(0, 360, 45)) +
+  labs(
+    title = "Spin Axis vs Total Pitch Movement",
+    x = "Spin Axis (Degrees)",
+    y = "Total Movement (inches)"
+  ) +
+  theme_minimal()
+
+```
+
+#5
+
+```{r}
+# Select a sample pitch
+sample_pitch <- pitch_data %>%
+  filter(!is.na(pfx_x), !is.na(pfx_z)) %>%
+  slice_sample(n = 1)
+
+# Constants
+release_height <- 1.8  # approx shoulder height (m)
+plate_distance <- 18.44  # meters (60 ft 6 in)
+steps <- 100
+delta_t <- 0.001  # time step in seconds
+
+# Extract data
+vx0 <- 0               # ignore side movement in this simplification
+vy0 <- sample_pitch$release_speed * 0.44704  # convert mph to m/s
+vz0 <- 0
+ay <- -9.81 + sample_pitch$pfx_z * inch_to_meter * fps_to_mps2  # vertical + Magnus
+ax <- sample_pitch$pfx_x * inch_to_meter * fps_to_mps2
+
+```
+
+
+```{r}
+trajectory_with_magnus <- tibble(time = seq(0, 0.4, delta_t)) %>%
+  mutate(
+    x = 0,
+    y = release_height + vy0 * time + 0.5 * ay * time^2,
+    z = 0 + vz0 * time + 0.5 * ax * time^2,
+    type = "With Magnus"
+  )
+
+trajectory_gravity_only <- tibble(time = seq(0, 0.4, delta_t)) %>%
+  mutate(
+    x = 0,
+    y = release_height + vy0 * time + 0.5 * (-9.81) * time^2,
+    z = 0,
+    type = "Gravity Only"
+  )
+
+# Combine both
+trajectory_data <- bind_rows(trajectory_with_magnus, trajectory_gravity_only)
+
+```
+
+```{r}
+ggplot(trajectory_data, aes(x = time, y = y, color = type)) +
+  geom_line(size = 1.2) +
+  labs(
+    title = "Pitch Trajectory With vs Without Magnus Effect",
+    x = "Time (s)",
+    y = "Vertical Position (m)"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+# Continue from earlier code...
+
+# Convert spin-induced accelerations to m/s²
+ax <- sample_pitch$pfx_x * inch_to_meter * fps_to_mps2
+ay <- -9.81 + sample_pitch$pfx_z * inch_to_meter * fps_to_mps2  # gravity + vertical spin
+
+# Horizontal (Z) component is now included
+vz0 <- 0  # starting horizontal velocity (we simplify as 0)
+
+```
+
+
+```{r}
+trajectory_with_magnus <- tibble(time = seq(0, 0.4, delta_t)) %>%
+  mutate(
+    y = release_height + vy0 * time + 0.5 * ay * time^2,  # vertical
+    z = 0 + vz0 * time + 0.5 * ax * time^2,               # horizontal
+    type = "With Magnus"
+  )
+
+trajectory_gravity_only <- tibble(time = seq(0, 0.4, delta_t)) %>%
+  mutate(
+    y = release_height + vy0 * time + 0.5 * (-9.81) * time^2,
+    z = 0,  # no horizontal movement without spin
+    type = "Gravity Only"
+  )
+
+trajectory_data <- bind_rows(trajectory_with_magnus, trajectory_gravity_only)
+
+```
+
+```{r}
+ggplot(trajectory_data, aes(x = z, y = y, color = type)) +
+  geom_path(size = 1.2) +
+  labs(
+    title = "Pitch Flight Path: Side View (Z vs Y)",
+    x = "Horizontal Movement (m)",
+    y = "Vertical Height (m)",
+    color = "Trajectory Type"
+  ) +
+  theme_minimal()
+
+```
+
+
+
+approximate C_L
+
+
+```{r}
+# Physical constants
+mass <- 0.145                # kg
+radius <- 0.0366             # m
+area <- pi * radius^2        # m^2
+rho <- 1.225                 # kg/m^3 (air density)
+inch_to_meter <- 0.0254
+fps_to_mps2 <- 50^2          # 50 frames/sec, as Statcast movement is in inches/frame^2
+g <- 9.81                    # m/s^2
+
+```
+
+```{r}
+pitch_data <- pitch_data %>%
+  mutate(
+    v_mps = release_speed * 0.44704,  # convert mph to m/s
+    a_total_z = pfx_z * inch_to_meter * fps_to_mps2,  # vertical acceleration from data
+    a_lift = a_total_z + g,  # lift is the upward part not due to gravity
+    F_lift = mass * a_lift   # Newtons
+  )
+
+```
+
+
+
+
+```{r}
+pitch_data <- pitch_data %>%
+  mutate(
+    CL = (2 * F_lift) / (rho * area * v_mps^2)
+    
+  )
+mean(pitch_data$CL, na.rm = TRUE)
+```
+
+
+
+```{r}
+pitch_data %>%
+  group_by(pitch_type) %>%
+  summarise(avg_CL = mean(CL, na.rm = TRUE)) %>%
+  arrange(desc(avg_CL))
+
+```
+
+
+
+```{r}
+ggplot(pitch_data, aes(x = release_spin_rate, y = CL, color = pitch_type)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(
+    title = "Estimated Lift Coefficient vs Spin Rate",
+    x = "Spin Rate (rpm)",
+    y = expression(C[L])
+  ) +
+  theme_minimal()
+
+```
+
+
+
+```{r}
+pitch_labels <- tribble(
+  ~pitch_type, ~label,
+  "FF", "4-Seam Fastball",
+  "FT", "2-Seam Fastball",
+  "SI", "Sinker",
+  "CH", "Changeup",
+  "CU", "Curveball",
+  "SL", "Slider",
+  "FC", "Cutter",
+  "KN", "Knuckleball"
+)
+
+
+# ---- 1. Your average CL per pitch type ----
+# Assume 'pitch_data' contains a 'CL' column
+avg_cl <- pitch_data %>%
+  group_by(pitch_type) %>%
+  summarise(mean_CL = mean(CL, na.rm = TRUE)) %>%
+  ungroup()
+
+# ---- 2. Typical ranges per pitch type ----
+# You can customize this based on physics references
+typical_ranges <- tribble(
+  ~pitch_type,         ~CL_min, ~CL_max,
+  "4-Seam Fastball",    0.20,    0.35,
+  "2-Seam Fastball",    0.10,    0.25,
+  "Changeup",           0.10,    0.25,
+  "Curveball",         -0.40,   -0.20,
+  "Slider",            -0.05,    0.10,
+  "Cutter",             0.10,    0.20,
+  "Knuckleball",       -0.05,    0.05
+)
+
+avg_cl <- pitch_data %>%
+  group_by(pitch_type) %>%
+  summarise(mean_CL = mean(CL, na.rm = TRUE)) %>%
+  left_join(pitch_labels, by = "pitch_type")
+
+
+
+typical_ranges <- tribble(
+  ~label,              ~CL_min, ~CL_max,
+  "4-Seam Fastball",     0.20,    0.35,
+  "2-Seam Fastball",     0.10,    0.25,
+  "Sinker",              0.05,    0.20,
+  "Changeup",            0.10,    0.25,
+  "Curveball",          -0.40,   -0.20,
+  "Slider",             -0.05,    0.10,
+  "Cutter",              0.10,    0.20,
+  "Knuckleball",        -0.05,    0.05
+)
+
+plot_data <- left_join(avg_cl, typical_ranges, by = "label") %>%
+  filter(!is.na(CL_min))  # remove any pitch types not in the range list
+
+ggplot(plot_data, aes(x = reorder(label, -mean_CL))) +
+  geom_linerange(aes(ymin = CL_min, ymax = CL_max), color = "gray70", size = 4) +
+  geom_point(aes(y = mean_CL), color = "blue", size = 3) +
+  geom_text(aes(y = mean_CL, label = round(mean_CL, 2)), vjust = -1, size = 4) +
+  labs(
+    title = "Lift Coefficient (C[L]) by Pitch Type",
+    subtitle = "Blue dots are your data; gray bars are typical ranges",
+    x = "Pitch Type",
+    y = expression(C[L])
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+
+
+
+```
+
+
+```{r cl-plot-fit, fig.height=6, fig.width=9, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+# Step 1: Your abbreviation lookup
+pitch_labels <- tribble(
+  ~pitch_type, ~label,
+  "FF", "4-Seam Fastball",
+  "FT", "2-Seam Fastball",
+  "SI", "Sinker",
+  "CH", "Changeup",
+  "CU", "Curveball",
+  "SL", "Slider",
+  "FC", "Cutter",
+  "KN", "Knuckleball"
+)
+
+# Step 2: Your average CL
+avg_cl <- pitch_data %>%
+  group_by(pitch_type) %>%
+  summarise(mean_CL = mean(CL, na.rm = TRUE)) %>%
+  left_join(pitch_labels, by = "pitch_type") %>%
+  filter(!is.na(label))  # remove unmapped types
+
+# Step 3: Typical CL ranges
+typical_ranges <- tribble(
+  ~label,              ~CL_min, ~CL_max,
+  "4-Seam Fastball",     0.20,    0.35,
+  "2-Seam Fastball",     0.10,    0.25,
+  "Sinker",              0.05,    0.20,
+  "Changeup",            0.10,    0.25,
+  "Curveball",          -0.40,   -0.20,
+  "Slider",             -0.05,    0.10,
+  "Cutter",              0.10,    0.20,
+  "Knuckleball",        -0.05,    0.05
+)
+
+# Step 4: Join and prep for plotting
+plot_data <- left_join(avg_cl, typical_ranges, by = "label")
+
+# Step 5: Expand y limits to ensure room for labels
+y_range <- range(c(plot_data$CL_min, plot_data$CL_max, plot_data$mean_CL), na.rm = TRUE)
+y_pad <- 0.05 * diff(y_range)
+y_limits <- c(y_range[1] - y_pad, y_range[2] + y_pad)
+
+# Step 6: Final plot
+ggplot(plot_data, aes(x = reorder(label, -mean_CL))) +
+  geom_linerange(aes(ymin = CL_min, ymax = CL_max), color = "gray70", size = 4, na.rm = TRUE) +
+  geom_point(aes(y = mean_CL), color = "blue", size = 3) +
+  geom_text(aes(y = mean_CL, label = round(mean_CL, 2)), vjust = -1, size = 4) +
+  scale_y_continuous(limits = y_limits) +
+  labs(
+    title = "Lift Coefficient (C[L]) by Pitch Type",
+    subtitle = "Blue dots are your data; gray bars are typical ranges",
+    x = "Pitch Type",
+    y = expression(C[L])
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+
+```
+
+```{r  cl-plot-fixed, fig.height=6, fig.width=10, message=FALSE, warning=FALSE}
+
+
+#```{r cl-plot-fixed, fig.height=6, fig.width=10, message=FALSE, warning=FALSE}
+
+# 1. Label map (extend as needed)
+pitch_labels <- tribble(
+  ~pitch_type, ~label,
+  "FF", "4-Seam Fastball",
+  "FT", "2-Seam Fastball",
+  "SI", "Sinker",
+  "CH", "Changeup",
+  "CU", "Curveball",
+  "SL", "Slider",
+  "FC", "Cutter",
+  "KN", "Knuckleball"
+)
+
+# 2. Compute average CL and keep unmatched types too
+avg_cl <- pitch_data %>%
+  group_by(pitch_type) %>%
+  summarise(mean_CL = mean(CL, na.rm = TRUE)) %>%
+  left_join(pitch_labels, by = "pitch_type") %>%
+  mutate(label = if_else(is.na(label), pitch_type, label))  # use code if no label
+
+# 3. Define expected CL ranges (optional; doesn't need to include all)
+typical_ranges <- tribble(
+  ~label,              ~CL_min, ~CL_max,
+  "4-Seam Fastball",     0.20,    0.35,
+  "2-Seam Fastball",     0.10,    0.25,
+  "Sinker",              0.05,    0.20,
+  "Changeup",            0.10,    0.25,
+  "Curveball",          -0.40,   -0.20,
+  "Slider",             -0.05,    0.10,
+  "Cutter",              0.10,    0.20,
+  "Knuckleball",        -0.05,    0.05
+)
+
+# 4. Join, allow NAs for missing expected ranges
+plot_data <- left_join(avg_cl, typical_ranges, by = "label")
+
+# 5. Plot all pitch types & expand y-axis with padding
+ggplot(plot_data, aes(x = reorder(label, -mean_CL))) +
+  geom_linerange(aes(ymin = CL_min, ymax = CL_max), color = "gray70", size = 4, na.rm = TRUE) +
+  geom_point(aes(y = mean_CL), color = "blue", size = 3) +
+  geom_text(aes(y = mean_CL, label = round(mean_CL, 2)), vjust = -1, size = 4) +
+  scale_y_continuous(
+    name = expression(C[L]),
+    expand = expansion(mult = c(0.1, 0.15))  # 10% padding below, 15% above
+  ) +
+  labs(
+    title = "Lift Coefficient (C[L]) by Pitch Type",
+    subtitle = "Blue dots = your averages; gray bars = typical ranges",
+    x = "Pitch Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+
+```
+
+
+```{r lift-estimate-full, message=FALSE, warning=FALSE}
+
+
+# ---- Constants ----
+mass <- 0.145  # kg (baseball)
+radius <- 0.0366  # m
+area <- pi * radius^2  # cross-sectional area (m^2)
+rho <- 1.225  # air density (kg/m^3)
+Cd <- 0.3  # drag coefficient (assumed average)
+inch_to_meter <- 0.0254
+fps_to_mps2 <- 50^2  # frames/sec^2 (Statcast is 50 fps)
+g <- 9.81  # gravity in m/s^2
+
+# ---- Add spin-based features and force estimates ----
+pitch_data <- pitch_data %>%
+  mutate(
+    # Convert to SI
+    v_mps = release_speed * 0.44704,
+    spin_rate_rad_s = release_spin_rate * 2 * pi / 60,  # rpm to rad/s
+    
+    # Statcast movement converted to acceleration (m/s^2)
+    a_z_total = pfx_z * inch_to_meter * fps_to_mps2,
+    a_x_total = pfx_x * inch_to_meter * fps_to_mps2,
+    
+    # Approximate drag (affects vertical + horizontal)
+    F_drag = 0.5 * rho * Cd * area * v_mps^2,
+    a_drag = F_drag / mass,  # assume mostly along y-axis (toward plate)
+    
+    # Magnus (lift) acceleration estimation
+    a_lift = a_z_total + g,  # vertical Magnus only (gravity-corrected)
+    F_lift = mass * a_lift,
+    CL = (2 * F_lift) / (rho * area * v_mps^2),
+    
+    # Spin efficiency: how much spin contributes to movement
+    spin_factor = (spin_rate_rad_s * radius) / v_mps,  # ωR / v
+    spin_efficiency = a_lift / (spin_factor * v_mps),  # not physically exact, but diagnostic
+
+    # Optional: keep spin axis (direction of spin)
+    spin_axis = spin_axis  # degrees
+  )
+
+```
+
+```{r}
+pitch_data %>%
+  group_by(pitch_type) %>%
+  summarise(
+    avg_CL = mean(CL, na.rm = TRUE),
+    avg_spin_eff = mean(spin_efficiency, na.rm = TRUE)
+  )
+
+cor(pitch_data$spin_factor, pitch_data$CL, use = "complete.obs")
+
+```
+
+
+```{r spin-factor-vs-cl, message=FALSE, warning=FALSE}
+library(ggplot2)
+
+ggplot(pitch_data, aes(x = spin_factor, y = CL, color = pitch_type)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed") +
+  labs(
+    title = "Spin Factor vs Lift Coefficient (C[L])",
+    subtitle = "Higher spin factor should generally lead to higher lift if spin is efficient",
+    x = "Spin Factor (ωR / v)",
+    y = expression(C[L]),
+    color = "Pitch Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    axis.text = element_text(size = 12)
+  )
+
+```
+
+
+
+```{r}
+# Clean and select variables
+model_data <- pitch_data %>%
+  filter(!is.na(CL), !is.na(spin_factor), !is.na(spin_axis), !is.na(release_speed)) %>%
+  select(CL, pitch_type, spin_factor, spin_axis, release_speed, spin_efficiency) %>%
+  mutate(pitch_type = as.factor(pitch_type))
+
+```
+```{r}
+lm_model <- lm(CL ~ spin_factor + spin_axis + release_speed + pitch_type + spin_efficiency,
+               data = model_data)
+
+summary(lm_model)
+
+```
+
+
+```{r}
+
+lm_simple <- lm(CL ~ spin_factor + spin_axis + release_speed + spin_efficiency, data = model_data)
+summary(lm_simple)
+
+
+
+```
+
+
+
+
+
+```{r}
+library(randomForest)
+
+rf_model <- randomForest(CL ~ spin_factor + spin_axis + release_speed + pitch_type + spin_efficiency,
+                         data = model_data, importance = TRUE, ntree = 500)
+
+print(rf_model)
+importance(rf_model)
+varImpPlot(rf_model)
+
+
+```
+
+
+```{r}
+
+ggplot(pitch_data, aes(x = spin_efficiency, y = CL, color = pitch_type)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "CL vs Spin Efficiency", x = "Spin Efficiency", y = expression(C[L]))
+
+
+```
+
+
+```{r}
+ggplot(pitch_data, aes(x = spin_efficiency, y = CL, color = pitch_type)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_x_continuous(limits = c(0, 30)) +  # zoom in here
+  labs(
+    title = "Lift Coefficient (C[L]) vs Spin Efficiency (Zoomed)",
+    subtitle = "Most meaningful relationships occur in spin efficiency < 30",
+    x = "Spin Efficiency",
+    y = expression(C[L]),
+    color = "Pitch Type"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+
+```{r summary-table, message=FALSE, warning=FALSE}
+
+# Summarize: count, mean, and SD for selected variables by pitch type
+pitch_summary_stats <- pitch_data %>%
+  group_by(pitch_type) %>%
+  summarise(
+    Count = n(),
+    Release_Speed_Mean = mean(release_speed, na.rm = TRUE),
+    Release_Speed_SD = sd(release_speed, na.rm = TRUE),
+    Spin_Rate_Mean = mean(release_spin_rate, na.rm = TRUE),
+    Spin_Rate_SD = sd(release_spin_rate, na.rm = TRUE),
+    Spin_Factor_Mean = mean(spin_factor, na.rm = TRUE),
+    Spin_Factor_SD = sd(spin_factor, na.rm = TRUE),
+    Spin_Efficiency_Mean = mean(spin_efficiency, na.rm = TRUE),
+    Spin_Efficiency_SD = sd(spin_efficiency, na.rm = TRUE),
+    CL_Mean = mean(CL, na.rm = TRUE),
+    CL_SD = sd(CL, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+pitch_summary_stats
+
+```
+
+```{r}
+
+install.packages("kableExtra")
+
+
+```
+
+```{r summary-table-fixed, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(tidyverse)
+library(kableExtra)
+
+# Step 1: Summary table
+pitch_summary <- pitch_data %>%
+  group_by(pitch_type) %>%
+  summarise(
+    Count = n(),
+    Release_Speed_Mean = mean(release_speed, na.rm = TRUE),
+    Release_Speed_SD = sd(release_speed, na.rm = TRUE),
+    Spin_Rate_Mean = mean(release_spin_rate, na.rm = TRUE),
+    Spin_Rate_SD = sd(release_spin_rate, na.rm = TRUE),
+    Spin_Factor_Mean = mean(spin_factor, na.rm = TRUE),
+    Spin_Factor_SD = sd(spin_factor, na.rm = TRUE),
+    Spin_Efficiency_Mean = mean(spin_efficiency, na.rm = TRUE),
+    Spin_Efficiency_SD = sd(spin_efficiency, na.rm = TRUE),
+    CL_Mean = mean(CL, na.rm = TRUE),
+    CL_SD = sd(CL, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+pitch_summary
+
+# Step 2: Conditional output (safe version)
+if (knitr::is_latex_output()) {
+  pitch_summary %>%
+    kbl(format = "latex", booktabs = TRUE, digits = 2,
+        caption = "Pitching Summary Statistics by Pitch Type") %>%
+    kable_styling(latex_options = c("striped", "hold_position", "scale_down")) %>%
+    print()
+} else {
+  pitch_summary %>%
+    kbl(format = "html", digits = 2,
+        caption = "Pitching Summary Statistics by Pitch Type") %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+    print()
+}
+
+
+```
+
+
+```{r}
+# Load necessary libraries
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+# Assuming your dataset is named df_clean and has a column 'pitch_type'
+# Step 1: Calculate counts and percentages from your dataset
+your_pitch_summary <- df_clean %>%
+  count(pitch_type, name = "Your_Data_Count") %>%
+  mutate(Your_Data_Percent = round(100 * Your_Data_Count / sum(Your_Data_Count), 2))
+
+# Step 2: Define MLB typical counts and percentages (based on 2022 data)
+mlb_pitch_data <- tribble(
+  ~pitch_type, ~MLB_Typical_Count, ~MLB_Typical_Percent,
+  "FF", 232974, 32.96,  # Four-Seam Fastball
+  "SL", 136930, 19.37,  # Slider
+  "SI", 111351, 15.75,  # Sinker
+  "CH", 80252, 11.35,   # Changeup
+  "CU", 56681, 8.02,    # Curveball
+  "FC", 50234, 7.11,    # Cutter
+  "KC", 14194, 2.01,    # Knuckle Curve
+  "SW", 11518, 1.63,    # Sweeper
+  "FS", 10376, 1.47,    # Splitter
+  "SLV", 1711, 0.24,    # Slurve
+  "EP", 494, 0.07       # Eephus
+)
+
+# Step 3: Merge your data with MLB data
+combined_summary <- your_pitch_summary %>%
+  left_join(mlb_pitch_data, by = "pitch_type") %>%
+  replace_na(list(MLB_Typical_Count = 0, MLB_Typical_Percent = 0))  # Replace NAs with 0
+
+# Step 4: Create and display the table
+combined_summary %>%
+  arrange(desc(Your_Data_Count)) %>%
+  kable(
+    col.names = c("Pitch Type", "Your Data Count", "Your Data %", "MLB Typical Count", "MLB Typical %"),
+    caption = "Comparison of Pitch Types: Your Dataset vs. MLB Averages"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+```
+
+```{r}
+install.packages("webshot2")
+install.packages("kableExtra")
+webshot2::install_phantomjs()
+```
+
+
+
+
+```{r}
+library(knitr)
+library(kableExtra)
+library(dplyr)
+
+latex_table <- combined_summary %>%
+  arrange(desc(Your_Data_Count)) %>%
+  kable(
+    format = "latex",
+    booktabs = TRUE,
+    col.names = c("Pitch Type", "Your Data Count", "Your Data \\%", "MLB Typical Count", "MLB Typical \\%"),
+    caption = "Comparison of Pitch Types: Your Dataset vs. MLB Averages",
+    label = "pitch_table"
+  ) %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+
+# Force display of LaTeX code
+print(latex_table)
+
+
+```
+
+```{r}
+latex_code <- combined_summary %>%
+  arrange(desc(Your_Data_Count)) %>%
+  kable(
+    format = "latex",
+    booktabs = TRUE,
+    col.names = c("Pitch Type", "Your Data Count", "Your Data \\%", "MLB Typical Count", "MLB Typical \\%"),
+    caption = "Comparison of Pitch Types: Your Dataset vs. MLB Averages",
+    label = "pitch_table"
+  ) %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+
+cat(latex_code)
+
+```
+
+```{r}
+
+# Assuming `combined_summary` exists
+latex_code <- combined_summary %>%
+  arrange(desc(Your_Data_Count)) %>%
+  kable(
+    format = "latex",
+    booktabs = TRUE,
+    col.names = c("Pitch Type", "Your Data Count", "Your Data \\%", "MLB Typical Count", "MLB Typical \\%"),
+    caption = "Comparison of Pitch Types: Your Dataset vs. MLB Averages",
+    label = "pitch_table"
+  ) %>%
+  kable_styling(latex_options = c("hold_position"))  # No striped rows
+
+cat(latex_code)
+
+```
+
+
+
+
+
